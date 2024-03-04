@@ -1,0 +1,7 @@
+etcd-conf:
+  address: "172.16.38.139:2379,172.16.38.130:2379"
+  timeout: 5000
+http-address: "0.0.0.0:8101"
+grpc-address: "0.0.0.0:8102"
+qz-conf:
+  is_enable: true
