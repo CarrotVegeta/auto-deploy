@@ -84,7 +84,7 @@ func dispatchAndExecute(server, username, password, zipFilePath, envPath string)
 		return fmt.Errorf("failed to create SCP client: %v", err)
 	}
 	defer client.Close()
-
+	fmt.Println("ZIP file extracted start")
 	destPath, err := extractFilePathWithoutExt(zipFilePath)
 	if err != nil {
 		return err
@@ -93,6 +93,7 @@ func dispatchAndExecute(server, username, password, zipFilePath, envPath string)
 		log.Fatal(err)
 	}
 	fmt.Println("ZIP file extracted successfully")
+	fmt.Println("upload file to remote server")
 	fileName := filepath.Base(zipFilePath)
 	remotePath := "./" + strings.TrimSuffix(fileName, ".zip")
 	_ = client.Mkdir(remotePath)
@@ -100,7 +101,6 @@ func dispatchAndExecute(server, username, password, zipFilePath, envPath string)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("upload file to remote server")
 	// 复制zip文件到远程服务器
 	envName := filepath.Base(envPath)
 	err = copyFile(client, envPath, remotePath+"/"+envName)
