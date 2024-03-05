@@ -100,12 +100,14 @@ func dispatchAndExecute(server, username, password, zipFilePath, envPath string)
 	if err != nil {
 		log.Fatal(err)
 	}
+	fmt.Println("upload file to remote server")
 	// 复制zip文件到远程服务器
 	envName := filepath.Base(envPath)
 	err = copyFile(client, envPath, remotePath+"/"+envName)
 	if err != nil {
 		return fmt.Errorf("failed to copy env file: %v", err)
 	}
+	fmt.Println("execute sh")
 	// 执行install.sh脚本
 	installCommand := fmt.Sprintf("cd %s &&  ./install.sh", remotePath)
 	err = Run(conn, installCommand)
