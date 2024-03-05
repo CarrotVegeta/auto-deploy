@@ -85,29 +85,38 @@ func dispatchAndExecute(server, username, password, zipFilePath, envPath string)
 	}
 	defer client.Close()
 
-	// 复制zip文件到远程服务器
-	err = copyFile(client, zipFilePath, "./up.zip")
+	destPath, err := extractFilePathWithoutExt(zipFilePath)
 	if err != nil {
-		return fmt.Errorf("failed to copy zip file: %v", err)
+		return err
 	}
-	// 执行unzip命令
-	unzipCmd := fmt.Sprintf("unzip -o %s ", "./up.zip")
-	err = Run(conn, unzipCmd)
+	if err := unzip(zipFilePath, destPath); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("ZIP file extracted successfully")
+	fileName := filepath.Base(zipFilePath)
+	remotePath := "./" + strings.TrimSuffix(fileName, ".zip")
+	_ = client.Mkdir(remotePath)
+	err = uploadDirectory(client, destPath, remotePath)
 	if err != nil {
-		return fmt.Errorf("failed to unzip: %v", err)
+		log.Fatal(err)
 	}
 	// 复制zip文件到远程服务器
 	envName := filepath.Base(envPath)
-	err = copyFile(client, envPath, "./up/"+envName)
+	err = copyFile(client, envPath, remotePath+"/"+envName)
 	if err != nil {
 		return fmt.Errorf("failed to copy env file: %v", err)
 	}
 	// 执行install.sh脚本
-	err = Run(conn, "cd ~/up &&  ./install.sh")
+	installCommand := fmt.Sprintf("cd %s &&  ./install.sh", remotePath)
+	err = Run(conn, installCommand)
 	if err != nil {
 		return fmt.Errorf("failed to execute command on server: %v", err)
 	}
-
+	// 执行install.sh脚本
+	//err = deleteDir(destPath)
+	//if err != nil {
+	//	return fmt.Errorf("failed to remove local unzip file: %v", err)
+	//}
 	return nil
 }
 func Run(conn *ssh.Client, command string) error {
@@ -126,6 +135,21 @@ func Run(conn *ssh.Client, command string) error {
 	return nil
 }
 
+// 删除文件夹及其所有内容
+func deleteDir(dir string) error {
+	// 遍历目录
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err // 如果在遍历过程中遇到错误，返回该错误
+		}
+		return os.RemoveAll(path) // 删除文件或目录
+	})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // copyFile 用于复制文件到远程服务器
 func copyFile(client *sftp.Client, srcPath, destPath string) error {
 	// 打开本地文件
@@ -141,7 +165,6 @@ func copyFile(client *sftp.Client, srcPath, destPath string) error {
 		return fmt.Errorf("failed to create destination file: %v", err)
 	}
 	defer destFile.Close()
-
 	// 复制文件内容
 	_, err = io.Copy(destFile, srcFile)
 	if err != nil {
@@ -151,43 +174,111 @@ func copyFile(client *sftp.Client, srcPath, destPath string) error {
 	return nil
 }
 
-// unzip 函数用于解压zip包
-func unzip(zipFilePath string) error {
-	// 第一步，打开 zip 文件
-	zipFile, err := zip.OpenReader(zipFilePath)
+// 解压ZIP文件到指定目录
+func unzip(src, dest string) error {
+	r, err := zip.OpenReader(src)
 	if err != nil {
-		return fmt.Errorf("error opening zip file:%v", err)
+		return err
 	}
-	defer zipFile.Close()
+	defer r.Close()
 
-	// 第二步，遍历 zip 中的文件
-	for _, f := range zipFile.File {
-		filePath := f.Name
+	os.MkdirAll(dest, 0755)
+
+	for _, f := range r.File {
+		filePath := filepath.Join(dest, f.Name)
+
 		if f.FileInfo().IsDir() {
-			_ = os.MkdirAll(filePath, os.ModePerm)
+			os.MkdirAll(filePath, f.Mode())
 			continue
 		}
-		fmt.Println(filepath.Dir(filePath))
-		dirPath := "./up"
-		// 创建对应文件夹
-		if err := os.MkdirAll(dirPath, os.ModePerm); err != nil {
-			return fmt.Errorf("error create unzio dir:%v", err)
+
+		if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+			return err
 		}
-		// 解压到的目标文件
-		dstFile, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+
+		outFile, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
 		if err != nil {
-			return fmt.Errorf("failed to open zip file: %v", err)
+			return err
 		}
-		file, err := f.Open()
+
+		rc, err := f.Open()
 		if err != nil {
-			return fmt.Errorf("failed to open zipped file: %v", err)
+			return err
 		}
-		// 写入到解压到的目标文件
-		if _, err := io.Copy(dstFile, file); err != nil {
-			return fmt.Errorf("failed to copy zipped file content: %v", err)
+
+		_, err = io.Copy(outFile, rc)
+
+		outFile.Close()
+		rc.Close()
+
+		if err != nil {
+			return err
 		}
-		dstFile.Close()
-		file.Close()
 	}
+
 	return nil
+}
+
+// 上传目录内容
+func uploadDirectory(client *sftp.Client, localPath, remotePath string) error {
+	localFiles, err := os.ReadDir(localPath)
+	if err != nil {
+		return err
+	}
+	for _, file := range localFiles {
+		localFilePath := filepath.Join(localPath, file.Name())
+		remoteFilePath := filepath.Join(remotePath, file.Name())
+
+		if file.IsDir() {
+			_ = client.Mkdir(remoteFilePath)
+			//if err != nil {
+			//	return err
+			//}
+			err = uploadDirectory(client, localFilePath, remoteFilePath)
+			if err != nil {
+				return err
+			}
+		} else {
+			err := uploadFile(client, localFilePath, remoteFilePath)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// 上传单个文件
+func uploadFile(client *sftp.Client, localFilePath, remoteFilePath string) error {
+	localFile, err := os.Open(localFilePath)
+	if err != nil {
+		return err
+	}
+	defer localFile.Close()
+
+	remoteFile, err := client.Create(remoteFilePath)
+	if err != nil {
+		return err
+	}
+	defer remoteFile.Close()
+	// 设置文件权限为755
+	if err := remoteFile.Chmod(0755); err != nil {
+		log.Fatal("Failed to set file permissions: ", err)
+	}
+	_, err = io.Copy(remoteFile, localFile)
+	return err
+}
+
+// extractFilePathWithoutExt 提取给定ZIP文件路径，并返回去掉.zip后缀的路径
+func extractFilePathWithoutExt(zipFilePath string) (string, error) {
+	// 提取文件的后缀
+	ext := filepath.Ext(zipFilePath)
+	if ext != ".zip" {
+		return "", fmt.Errorf("the file is not a ZIP file: %s", zipFilePath)
+	}
+
+	// 去掉.zip后缀
+	withoutExt := strings.TrimSuffix(zipFilePath, ext)
+	return withoutExt, nil
 }
